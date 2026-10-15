@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/e12jassir/atenea/internal/model"
@@ -82,7 +83,6 @@ func (c *Client) Login(docType, username, password string) error {
 	bodyBytes, _ := io.ReadAll(postResp.Body)
 	body := string(bodyBytes)
 
-	// Verificar si hay error en la query del URL final
 	if strings.Contains(postResp.Request.URL.RawQuery, "error=") {
 		return errors.New("documento, tipo o contraseña incorrectos en Sofía Plus")
 	}
@@ -134,7 +134,7 @@ func (c *Client) Login(docType, username, password string) error {
 }
 
 func (c *Client) hasMoodleCookie() bool {
-	u, _ := url.Parse(BaseURL)
+	u, _ := url.Parse(MoodleBase + "/")
 	for _, cookie := range c.jar.Cookies(u) {
 		if strings.HasPrefix(cookie.Name, "MoodleSession") {
 			return true
@@ -151,8 +151,13 @@ func (c *Client) setHeaders(req *http.Request, referer string) {
 	req.Header.Set("Origin", BaseURL)
 }
 
-// GetPendingEvidences consulta el libro de calificaciones y extrae evidencias pendientes
-func (c *Client) GetPendingEvidences() ([]model.Evidence, error) {
+type GradeReportResult struct {
+	Graded  []model.Evidence
+	Pending []model.Evidence
+}
+
+// GetGradeReport consulta el libro de calificaciones y extrae aprobadas, no aprobadas y pendientes
+func (c *Client) GetGradeReport() (*GradeReportResult, error) {
 	reportURL := fmt.Sprintf("%s/grade/report/user/index.php?id=%s", MoodleBase, c.course)
 	req, err := http.NewRequest("GET", reportURL, nil)
 	if err != nil {
@@ -175,7 +180,7 @@ func (c *Client) GetPendingEvidences() ([]model.Evidence, error) {
 	spaceRegex := regexp.MustCompile(`\s+`)
 
 	rows := trRegex.FindAllStringSubmatch(html, -1)
-	var pending []model.Evidence
+	res := &GradeReportResult{}
 
 	for _, r := range rows {
 		if len(r) < 2 {
@@ -194,21 +199,186 @@ func (c *Client) GetPendingEvidences() ([]model.Evidence, error) {
 		if len(cleaned) >= 2 {
 			name := cleaned[0]
 			grade := cleaned[1]
+			feedback := ""
+			if len(cleaned) > 2 {
+				feedback = strings.TrimSpace(strings.ReplaceAll(cleaned[2], "&nbsp;", ""))
+			}
 
 			if strings.HasPrefix(name, "Evidencia") || strings.HasPrefix(name, "Foro") || strings.HasPrefix(name, "Taller") {
-				if grade != "A" && grade != "D" {
-					pending = append(pending, model.Evidence{
-						Title:  name,
-						Course: "ADSO Ficha 3545922",
-						Status: "Pendiente por Calificar",
-						Grade:  grade,
+				cleanName := name
+				if strings.HasPrefix(name, "Evidencia") && !strings.HasPrefix(name, "Evidencia: ") {
+					cleanName = "Evidencia: " + strings.TrimSpace(strings.TrimPrefix(name, "Evidencia"))
+				} else if strings.HasPrefix(name, "Foro") && !strings.HasPrefix(name, "Foro: ") {
+					cleanName = "Foro: " + strings.TrimSpace(strings.TrimPrefix(name, "Foro"))
+				} else if strings.HasPrefix(name, "Taller") && !strings.HasPrefix(name, "Taller: ") {
+					cleanName = "Taller: " + strings.TrimSpace(strings.TrimPrefix(name, "Taller"))
+				}
+
+				if grade == "A" || grade == "D" {
+					status := "Aprobado (A)"
+					if grade == "D" {
+						status = "Deficiente (D)"
+					}
+					res.Graded = append(res.Graded, model.Evidence{
+						Title:    cleanName,
+						Course:   "ADSO Ficha 3545922",
+						Status:   status,
+						Grade:    grade,
+						Feedback: feedback,
+					})
+				} else {
+					res.Pending = append(res.Pending, model.Evidence{
+						Title:    cleanName,
+						Course:   "ADSO Ficha 3545922",
+						Status:   "Pendiente",
+						Grade:    "-",
+						Feedback: feedback,
 					})
 				}
 			}
 		}
 	}
 
-	return pending, nil
+	return res, nil
+}
+
+// GetPendingEvidences consulta únicamente las pendientes
+func (c *Client) GetPendingEvidences() ([]model.Evidence, error) {
+	rep, err := c.GetGradeReport()
+	if err != nil {
+		return nil, err
+	}
+	return rep.Pending, nil
+}
+
+// GetApprovedGrades consulta las calificaciones aprobadas
+func (c *Client) GetApprovedGrades() ([]model.Evidence, error) {
+	rep, err := c.GetGradeReport()
+	if err != nil {
+		return nil, err
+	}
+	return rep.Graded, nil
+}
+
+// GetFeedback consulta las evidencias que tienen retroalimentación del instructor
+func (c *Client) GetFeedback() ([]model.Evidence, error) {
+	rep, err := c.GetGradeReport()
+	if err != nil {
+		return nil, err
+	}
+	var withFb []model.Evidence
+	for _, g := range rep.Graded {
+		if g.Feedback != "" {
+			withFb = append(withFb, g)
+		}
+	}
+	return withFb, nil
+}
+
+// CheckAssignSubmission consulta el estado real de un envío en Moodle
+func (c *Client) CheckAssignSubmission(assignID string) string {
+	url := fmt.Sprintf("%s/mod/assign/view.php?id=%s", MoodleBase, assignID)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "DESCONOCIDO"
+	}
+	c.setHeaders(req, BaseURL+"/")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "DESCONOCIDO"
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	html := string(bodyBytes)
+
+	if strings.Contains(html, "Enviado para calificar") {
+		return "ENVIADO"
+	} else if strings.Contains(html, "Todavía no se han realizado envíos") || strings.Contains(html, "No se han realizado envíos") {
+		return "NO ENVIADO"
+	} else if strings.Contains(html, "Borrador") {
+		return "BORRADOR"
+	}
+	return "PENDIENTE"
+}
+
+// AuditPendingEvidences audita concurrentemente con goroutines el estado de entrega en vivo
+func (c *Client) AuditPendingEvidences() ([]model.Evidence, error) {
+	rep, err := c.GetGradeReport()
+	if err != nil {
+		return nil, err
+	}
+
+	// Obtener enlaces de assign/view.php del libro de notas
+	reportURL := fmt.Sprintf("%s/grade/report/user/index.php?id=%s", MoodleBase, c.course)
+	req, err := http.NewRequest("GET", reportURL, nil)
+	if err != nil {
+		return rep.Pending, nil
+	}
+	c.setHeaders(req, BaseURL+"/")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return rep.Pending, nil
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	html := string(bodyBytes)
+
+	reLink := regexp.MustCompile(`href="([^"]*assign/view\.php\?id=(\d+))"[^>]*>(.*?)</a>`)
+	tagRegex := regexp.MustCompile(`<[^>]+>`)
+	matches := reLink.FindAllStringSubmatch(html, -1)
+
+	type linkInfo struct {
+		id   string
+		name string
+	}
+	var links []linkInfo
+	for _, m := range matches {
+		if len(m) >= 4 {
+			cleanName := tagRegex.ReplaceAllString(m[3], "")
+			links = append(links, linkInfo{id: m[2], name: strings.TrimSpace(cleanName)})
+		}
+	}
+
+	// Consultar con worker pool concurrente en Go
+	var wg sync.WaitGroup
+	results := make([]model.Evidence, len(rep.Pending))
+	copy(results, rep.Pending)
+
+	sem := make(chan struct{}, 6) // máx 6 goroutines concurrentes
+
+	for i := range results {
+		ev := &results[i]
+		var foundID string
+		for _, l := range links {
+			parts := strings.Split(ev.Title, " ")
+			for _, p := range parts {
+				if len(p) > 6 && strings.Contains(l.name, p) {
+					foundID = l.id
+					break
+				}
+			}
+			if foundID != "" {
+				break
+			}
+		}
+
+		if foundID != "" {
+			wg.Add(1)
+			go func(idx int, aid string) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				status := c.CheckAssignSubmission(aid)
+				results[idx].Status = status
+			}(i, foundID)
+		}
+	}
+
+	wg.Wait()
+	return results, nil
 }
 
 // GetAnnouncements consulta el tablón de anuncios de Zajuna
@@ -257,13 +427,59 @@ func (c *Client) GetAnnouncements() ([]model.Announcement, error) {
 			}
 
 			announcements = append(announcements, model.Announcement{
-				ID:      discID,
-				Title:   title,
-				Link:    link,
-				Author:  authorDate,
+				ID:     discID,
+				Title:  title,
+				Link:   link,
+				Author: authorDate,
 			})
 		}
 	}
 
 	return announcements, nil
+}
+
+// GetAnnouncementDetail obtiene el texto completo de un comunicado
+func (c *Client) GetAnnouncementDetail(discussID string) (string, error) {
+	url := fmt.Sprintf("%s/mod/forum/discuss.php?d=%s", MoodleBase, discussID)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+	c.setHeaders(req, BaseURL+"/")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	html := string(bodyBytes)
+
+	rePost := regexp.MustCompile(`(?s)class=['"]post-content-container[^'"]*['"][^>]*>(.*?)</div>\s*</div>\s*</div>`)
+	m := rePost.FindStringSubmatch(html)
+	if len(m) < 2 {
+		reAlt := regexp.MustCompile(`(?s)class=['"]forumpost[^'"]*['"][^>]*>(.*?)</div>\s*</div>`)
+		m = reAlt.FindStringSubmatch(html)
+	}
+
+	if len(m) >= 2 {
+		raw := m[1]
+		reStyle := regexp.MustCompile(`(?s)<style[^>]*>.*?</style>`)
+		clean := reStyle.ReplaceAllString(raw, "")
+		clean = regexp.MustCompile(`<br\s*/?>`).ReplaceAllString(clean, "\n")
+		clean = regexp.MustCompile(`</(p|div|tr|h\d|li)>`).ReplaceAllString(clean, "\n")
+		clean = regexp.MustCompile(`<[^>]+>`).ReplaceAllString(clean, " ")
+		lines := strings.Split(clean, "\n")
+		var trimmed []string
+		for _, l := range lines {
+			t := strings.TrimSpace(l)
+			if t != "" {
+				trimmed = append(trimmed, t)
+			}
+		}
+		return strings.Join(trimmed, "\n"), nil
+	}
+
+	return "No se pudo extraer el cuerpo del anuncio.", nil
 }

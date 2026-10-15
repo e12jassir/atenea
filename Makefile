@@ -15,8 +15,7 @@ build:
 install: build
 	@echo "==> Instalando en $(INSTALL_PATH)..."
 	@mkdir -p $(HOME)/.local/bin
-	cp bin/$(BINARY_NAME) $(INSTALL_PATH)
-	chmod +x $(INSTALL_PATH)
+	install -m 755 bin/$(BINARY_NAME) $(INSTALL_PATH)
 	@echo "✓ Instalación completa. Ya puedes ejecutar '$(BINARY_NAME)' en cualquier terminal."
 
 clean:

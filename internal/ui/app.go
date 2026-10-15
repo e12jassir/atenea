@@ -108,14 +108,14 @@ func (m *Model) initAuthInputs() {
 	m.authInputs = make([]textinput.Model, 2)
 
 	m.authInputs[0] = textinput.New()
-	m.authInputs[0].Placeholder = "Número de Documento / Usuario"
+	m.authInputs[0].Placeholder = "Numero de Documento / Usuario"
 	m.authInputs[0].Prompt = "› "
 	m.authInputs[0].PromptStyle = lipgloss.NewStyle().Foreground(ColorAccent)
 	m.authInputs[0].TextStyle = lipgloss.NewStyle().Foreground(ColorHighlight)
 	m.authInputs[0].CharLimit = 35
 
 	m.authInputs[1] = textinput.New()
-	m.authInputs[1].Placeholder = "Contraseña de la plataforma"
+	m.authInputs[1].Placeholder = "Contrasena de la plataforma"
 	m.authInputs[1].Prompt = "› "
 	m.authInputs[1].PromptStyle = lipgloss.NewStyle().Foreground(ColorAccent)
 	m.authInputs[1].TextStyle = lipgloss.NewStyle().Foreground(ColorHighlight)
@@ -125,27 +125,27 @@ func (m *Model) initAuthInputs() {
 }
 
 func (m *Model) refreshMainMenu() {
-	senaBadge := BadgeSuccess.Render("[✓ Cifrado]")
+	senaBadge := BadgeSuccess.Render("[CONFIGURADO]")
 	if !m.vault.HasCredentials(model.PlatformSena) {
-		senaBadge = BadgeError.Render("[⚠️ Sin configurar]")
+		senaBadge = BadgeError.Render("[SIN CONFIGURAR]")
 	}
 
-	simaBadge := BadgeSuccess.Render("[✓ Cifrado]")
+	simaBadge := BadgeSuccess.Render("[CONFIGURADO]")
 	if !m.vault.HasCredentials(model.PlatformSima) {
-		simaBadge = BadgeError.Render("[⚠️ Sin configurar]")
+		simaBadge = BadgeError.Render("[SIN CONFIGURAR]")
 	}
 
-	inglesBadge := BadgeSuccess.Render("[✓ Cifrado]")
+	inglesBadge := BadgeSuccess.Render("[CONFIGURADO]")
 	if !m.vault.HasCredentials(model.PlatformIngles) {
-		inglesBadge = BadgeError.Render("[⚠️ Sin configurar]")
+		inglesBadge = BadgeError.Render("[SIN CONFIGURAR]")
 	}
 
 	m.menuList = []menuItem{
-		{category: "UNIVERSIDAD DE CARTAGENA", label: "🏛️  SIMA UDC (Ingeniería de Software)", badge: simaBadge, action: 0},
-		{category: "UNIVERSIDAD DE CARTAGENA", label: "🌐  SIMA INGLÉS (Plataforma Bilingüismo)", badge: inglesBadge, action: 1},
-		{category: "SENA ZAJUNA", label: "☕  ADSO (Ficha 3545922)", badge: senaBadge, action: 2},
-		{category: "CONFIGURACIÓN", label: "🔐  Bóveda de Credenciales (AES-256-GCM)", badge: "", action: 3},
-		{category: "CONFIGURACIÓN", label: "🚪  Salir", badge: "", action: 4},
+		{category: "UNIVERSIDAD DE CARTAGENA", label: "SIMA UDC (Ingenieria de Software)", badge: simaBadge, action: 0},
+		{category: "UNIVERSIDAD DE CARTAGENA", label: "SIMA INGLES (Plataforma Bilinguismo)", badge: inglesBadge, action: 1},
+		{category: "SENA ZAJUNA", label: "ANALISIS Y DESARROLLO DE SOFTWARE (Ficha 3545922)", badge: senaBadge, action: 2},
+		{category: "CONFIGURACION", label: "Boveda de Credenciales Cifradas (AES-256-GCM)", badge: "", action: 3},
+		{category: "CONFIGURACION", label: "Salir", badge: "", action: 4},
 	}
 }
 
@@ -240,8 +240,9 @@ func (m Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateSimaMenu
 			m.subCursor = 0
 			m.subItems = []string{
-				"Entregas y exámenes próximos (Con estado en vivo)",
-				"Volver al menú principal",
+				"1. Entregas y examenes proximos (Con estado en vivo)",
+				"2. Calificaciones del semestre actual",
+				"3. Volver al menu principal",
 			}
 		case 1: // Inglés
 			if !m.vault.HasCredentials(model.PlatformIngles) {
@@ -251,8 +252,8 @@ func (m Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateInglesMenu
 			m.subCursor = 0
 			m.subItems = []string{
-				"Actividades próximas de inglés",
-				"Volver al menú principal",
+				"1. Actividades y entregas proximas",
+				"2. Volver al menu principal",
 			}
 		case 2: // SENA
 			if !m.vault.HasCredentials(model.PlatformSena) {
@@ -262,9 +263,12 @@ func (m Model) updateMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateSenaMenu
 			m.subCursor = 0
 			m.subItems = []string{
-				"Lista general de evidencias pendientes",
-				"Tablón de anuncios de instructores",
-				"Volver al menú principal",
+				"1. Auditoria de entregas (Estado real en vivo)",
+				"2. Evidencias pendientes por calificar",
+				"3. Juicios evaluativos aprobados [A]",
+				"4. Tablon de anuncios oficiales",
+				"5. Retroalimentacion de instructores",
+				"6. Volver al menu principal",
 			}
 		case 3: // Vault
 			m.startAuth(model.PlatformSena)
@@ -292,31 +296,50 @@ func (m Model) updateSubmenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		if m.state == stateSenaMenu {
-			if m.subCursor == 0 {
+			switch m.subCursor {
+			case 0: // Auditoria check
 				m.state = stateLoading
-				m.loadingText = "Consultando evidencias en Zajuna LMS..."
+				m.loadingText = "Auditando evidencias en vivo en Zajuna..."
+				return m, m.fetchSenaAudit()
+			case 1: // Pendientes
+				m.state = stateLoading
+				m.loadingText = "Consultando evidencias pendientes..."
 				return m, m.fetchSenaPending()
-			} else if m.subCursor == 1 {
+			case 2: // Notas aprobadas
+				m.state = stateLoading
+				m.loadingText = "Consultando juicios evaluativos aprobados..."
+				return m, m.fetchSenaGrades()
+			case 3: // Anuncios
 				m.state = stateLoading
 				m.loadingText = "Descargando anuncios de instructores..."
 				return m, m.fetchSenaAnnouncements()
-			} else {
+			case 4: // Feedback
+				m.state = stateLoading
+				m.loadingText = "Descargando comentarios de instructores..."
+				return m, m.fetchSenaFeedback()
+			case 5:
 				m.state = stateMenu
 			}
 		} else if m.state == stateSimaMenu {
-			if m.subCursor == 0 {
+			switch m.subCursor {
+			case 0: // Upcoming
 				m.state = stateLoading
 				m.loadingText = "Sincronizando entregas con SIMA UDC..."
 				return m, m.fetchSimaUpcoming(model.PlatformSima)
-			} else {
+			case 1: // Grades overview
+				m.state = stateLoading
+				m.loadingText = "Consultando calificaciones del semestre..."
+				return m, m.fetchSimaGrades(model.PlatformSima)
+			case 2:
 				m.state = stateMenu
 			}
 		} else if m.state == stateInglesMenu {
-			if m.subCursor == 0 {
+			switch m.subCursor {
+			case 0:
 				m.state = stateLoading
-				m.loadingText = "Sincronizando plataforma de Inglés..."
+				m.loadingText = "Sincronizando plataforma de Ingles..."
 				return m, m.fetchSimaUpcoming(model.PlatformIngles)
-			} else {
+			case 1:
 				m.state = stateMenu
 			}
 		}
@@ -434,7 +457,7 @@ func (m Model) updateAuth(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			user := strings.TrimSpace(m.authInputs[0].Value())
 			pass := strings.TrimSpace(m.authInputs[1].Value())
 			if user == "" || pass == "" {
-				m.errorMessage = "El usuario y contraseña son requeridos"
+				m.errorMessage = "El usuario y contrasena son requeridos"
 				return m, nil
 			}
 
@@ -509,10 +532,40 @@ func (m Model) validateAndSaveCreds(p model.Platform, docType, user, pass string
 			Password: pass,
 		}
 		if err := m.vault.SaveCredentials(creds); err != nil {
-			return authValidatedMsg{ok: false, msg: fmt.Sprintf("Error guardando en bóveda: %v", err)}
+			return authValidatedMsg{ok: false, msg: fmt.Sprintf("Error guardando en boveda: %v", err)}
 		}
 
-		return authValidatedMsg{ok: true, msg: "✓ Credenciales verificadas en vivo y cifradas en bóveda"}
+		return authValidatedMsg{ok: true, msg: "[OK] Credenciales verificadas en vivo y cifradas en boveda"}
+	}
+}
+
+func (m Model) fetchSenaAudit() tea.Cmd {
+	return func() tea.Msg {
+		creds, err := m.vault.GetCredentials(model.PlatformSena)
+		if err != nil {
+			return dataLoadedMsg{err: err}
+		}
+		client, err := sena.NewClient()
+		if err != nil {
+			return dataLoadedMsg{err: err}
+		}
+		if err := client.Login(creds.DocType, creds.User, creds.Password); err != nil {
+			return dataLoadedMsg{err: err}
+		}
+		evidences, err := client.AuditPendingEvidences()
+		if err != nil {
+			return dataLoadedMsg{err: err}
+		}
+		var items []listItem
+		for _, e := range evidences {
+			items = append(items, listItem{
+				title:    e.Title,
+				subtitle: e.Course,
+				status:   e.Status,
+				details:  fmt.Sprintf("Materia: %s\nEstado de entrega: %s\nCalificacion: %s", e.Course, e.Status, e.Grade),
+			})
+		}
+		return dataLoadedMsg{title: "SENA ZAJUNA - AUDITORIA DE ENTREGAS", items: items}
 	}
 }
 
@@ -522,35 +575,57 @@ func (m Model) fetchSenaPending() tea.Cmd {
 		if err != nil {
 			return dataLoadedMsg{err: err}
 		}
-
 		client, err := sena.NewClient()
 		if err != nil {
 			return dataLoadedMsg{err: err}
 		}
-
 		if err := client.Login(creds.DocType, creds.User, creds.Password); err != nil {
 			return dataLoadedMsg{err: err}
 		}
-
 		evidences, err := client.GetPendingEvidences()
 		if err != nil {
 			return dataLoadedMsg{err: err}
 		}
-
 		var items []listItem
 		for _, e := range evidences {
 			items = append(items, listItem{
 				title:    e.Title,
 				subtitle: e.Course,
 				status:   e.Status,
-				details:  fmt.Sprintf("Materia: %s\nEstado: %s\nNota actual: %s", e.Course, e.Status, e.Grade),
+				details:  fmt.Sprintf("Materia: %s\nEstado: %s\nCalificacion: %s", e.Course, e.Status, e.Grade),
 			})
 		}
+		return dataLoadedMsg{title: "SENA ZAJUNA - EVIDENCIAS PENDIENTES", items: items}
+	}
+}
 
-		return dataLoadedMsg{
-			title: "SENA ZAJUNA — EVIDENCIAS PENDIENTES",
-			items: items,
+func (m Model) fetchSenaGrades() tea.Cmd {
+	return func() tea.Msg {
+		creds, err := m.vault.GetCredentials(model.PlatformSena)
+		if err != nil {
+			return dataLoadedMsg{err: err}
 		}
+		client, err := sena.NewClient()
+		if err != nil {
+			return dataLoadedMsg{err: err}
+		}
+		if err := client.Login(creds.DocType, creds.User, creds.Password); err != nil {
+			return dataLoadedMsg{err: err}
+		}
+		grades, err := client.GetApprovedGrades()
+		if err != nil {
+			return dataLoadedMsg{err: err}
+		}
+		var items []listItem
+		for _, g := range grades {
+			items = append(items, listItem{
+				title:    g.Title,
+				subtitle: fmt.Sprintf("Juicio Evaluativo: %s", g.Grade),
+				status:   g.Status,
+				details:  fmt.Sprintf("Materia: %s\nResultado: %s\nRetroalimentacion: %s", g.Course, g.Status, g.Feedback),
+			})
+		}
+		return dataLoadedMsg{title: "SENA ZAJUNA - JUICIOS EVALUATIVOS APROBADOS", items: items}
 	}
 }
 
@@ -560,35 +635,58 @@ func (m Model) fetchSenaAnnouncements() tea.Cmd {
 		if err != nil {
 			return dataLoadedMsg{err: err}
 		}
-
 		client, err := sena.NewClient()
 		if err != nil {
 			return dataLoadedMsg{err: err}
 		}
-
 		if err := client.Login(creds.DocType, creds.User, creds.Password); err != nil {
 			return dataLoadedMsg{err: err}
 		}
-
 		announcements, err := client.GetAnnouncements()
 		if err != nil {
 			return dataLoadedMsg{err: err}
 		}
-
 		var items []listItem
 		for _, a := range announcements {
+			body, _ := client.GetAnnouncementDetail(a.ID)
 			items = append(items, listItem{
 				title:    a.Title,
 				subtitle: a.Author,
-				status:   "Oficial",
-				details:  fmt.Sprintf("Título: %s\nPublicado por: %s\nEnlace: %s", a.Title, a.Author, a.Link),
+				status:   "OFICIAL",
+				details:  fmt.Sprintf("Titulo: %s\nPublicado por: %s\nEnlace: %s\n\nContenido:\n%s", a.Title, a.Author, a.Link, body),
 			})
 		}
+		return dataLoadedMsg{title: "SENA ZAJUNA - TABLON DE ANUNCIOS", items: items}
+	}
+}
 
-		return dataLoadedMsg{
-			title: "SENA ZAJUNA — TABLÓN DE ANUNCIOS",
-			items: items,
+func (m Model) fetchSenaFeedback() tea.Cmd {
+	return func() tea.Msg {
+		creds, err := m.vault.GetCredentials(model.PlatformSena)
+		if err != nil {
+			return dataLoadedMsg{err: err}
 		}
+		client, err := sena.NewClient()
+		if err != nil {
+			return dataLoadedMsg{err: err}
+		}
+		if err := client.Login(creds.DocType, creds.User, creds.Password); err != nil {
+			return dataLoadedMsg{err: err}
+		}
+		feedbackList, err := client.GetFeedback()
+		if err != nil {
+			return dataLoadedMsg{err: err}
+		}
+		var items []listItem
+		for _, f := range feedbackList {
+			items = append(items, listItem{
+				title:    f.Title,
+				subtitle: fmt.Sprintf("Nota: %s", f.Grade),
+				status:   "FEEDBACK",
+				details:  fmt.Sprintf("Materia: %s\nNota: %s\nComentario del Instructor:\n\"%s\"", f.Course, f.Grade, f.Feedback),
+			})
+		}
+		return dataLoadedMsg{title: "SENA ZAJUNA - RETROALIMENTACION DE INSTRUCTORES", items: items}
 	}
 }
 
@@ -600,17 +698,16 @@ func (m Model) fetchSimaUpcoming(p model.Platform) tea.Cmd {
 		}
 
 		baseURL := "https://sima.unicartagena.edu.co"
-		title := "SIMA UDC — ENTREGAS Y EXÁMENES"
+		title := "SIMA UDC - ENTREGAS Y EXAMENES"
 		if p == model.PlatformIngles {
 			baseURL = "https://ingles.unicartagena.edu.co"
-			title = "SIMA INGLÉS — ACTIVIDADES PENDIENTES"
+			title = "SIMA INGLES - ACTIVIDADES PROXIMAS"
 		}
 
 		client, err := sima.NewClient(baseURL)
 		if err != nil {
 			return dataLoadedMsg{err: err}
 		}
-
 		if err := client.Login(creds.User, creds.Password); err != nil {
 			return dataLoadedMsg{err: err}
 		}
@@ -624,16 +721,47 @@ func (m Model) fetchSimaUpcoming(p model.Platform) tea.Cmd {
 		for _, ev := range events {
 			items = append(items, listItem{
 				title:    ev.Title,
-				subtitle: fmt.Sprintf("%s • %s", ev.Course, ev.DueDate),
+				subtitle: fmt.Sprintf("%s · %s", ev.Course, ev.DueDate),
 				status:   ev.Status,
-				details:  fmt.Sprintf("Actividad: %s\nAsignatura: %s\nFecha límite: %s\nEstado: %s\nURL: %s", ev.Title, ev.Course, ev.DueDate, ev.Status, ev.Link),
+				details:  fmt.Sprintf("Actividad: %s\nAsignatura: %s\nFecha limite: %s\nEstado: %s\nURL: %s", ev.Title, ev.Course, ev.DueDate, ev.Status, ev.Link),
 			})
 		}
 
-		return dataLoadedMsg{
-			title: title,
-			items: items,
+		return dataLoadedMsg{title: title, items: items}
+	}
+}
+
+func (m Model) fetchSimaGrades(p model.Platform) tea.Cmd {
+	return func() tea.Msg {
+		creds, err := m.vault.GetCredentials(p)
+		if err != nil {
+			return dataLoadedMsg{err: err}
 		}
+
+		client, err := sima.NewClient("https://sima.unicartagena.edu.co")
+		if err != nil {
+			return dataLoadedMsg{err: err}
+		}
+		if err := client.Login(creds.User, creds.Password); err != nil {
+			return dataLoadedMsg{err: err}
+		}
+
+		grades, err := client.GetGradesOverview()
+		if err != nil {
+			return dataLoadedMsg{err: err}
+		}
+
+		var items []listItem
+		for _, g := range grades {
+			items = append(items, listItem{
+				title:    g.Course,
+				subtitle: fmt.Sprintf("Calificacion: %s", g.Grade),
+				status:   g.Status,
+				details:  fmt.Sprintf("Asignatura: %s\nNota Acumulada: %s\nEstado: %s", g.Course, g.Grade, g.Status),
+			})
+		}
+
+		return dataLoadedMsg{title: "SIMA UDC - CALIFICACIONES DEL SEMESTRE", items: items}
 	}
 }
 
@@ -664,13 +792,12 @@ func (m Model) View() string {
 		content = m.renderAuth()
 	}
 
-	// Centrado absoluto estilo Kickoff / Jules
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
 }
 
 func (m Model) renderMainMenu() string {
 	logo := AsciiLogoStyle.Render(AsciiLogo)
-	subtitle := SubtitleStyle.Render("Terminal Academic Intelligence Suite • Ficha ADSO & UDC")
+	subtitle := SubtitleStyle.Render("Terminal Academic Intelligence Suite · ADSO & UDC")
 
 	var lines []string
 	var lastCategory string
@@ -689,7 +816,7 @@ func (m Model) renderMainMenu() string {
 			prefix = " › "
 		}
 
-		itemText := fmt.Sprintf("%s%-42s %s", prefix, item.label, item.badge)
+		itemText := fmt.Sprintf("%s%-50s %s", prefix, item.label, item.badge)
 		if i == m.menuCursor {
 			lines = append(lines, MenuItemSelected.Render(itemText))
 		} else {
@@ -698,16 +825,16 @@ func (m Model) renderMainMenu() string {
 	}
 
 	menuBox := MenuBoxStyle.Render(strings.Join(lines, "\n"))
-	footer := FooterHelpStyle.Render("↑/k  ↓/j: navegar  •  enter: entrar  •  q: salir")
+	footer := FooterHelpStyle.Render("↑/k  ↓/j: navegar  ·  enter: entrar  ·  q: salir")
 
 	var elements []string
 	elements = append(elements, logo, subtitle)
 
 	if m.successMsg != "" {
-		elements = append(elements, "", StatusBarSuccess.Render("✓ "+m.successMsg))
+		elements = append(elements, "", StatusBarSuccess.Render("[OK] "+m.successMsg))
 	}
 	if m.errorMessage != "" {
-		elements = append(elements, "", StatusBarError.Render("❌ "+m.errorMessage))
+		elements = append(elements, "", StatusBarError.Render("[ERROR] "+m.errorMessage))
 	}
 
 	elements = append(elements, "", menuBox, "", footer)
@@ -715,13 +842,13 @@ func (m Model) renderMainMenu() string {
 }
 
 func (m Model) renderSubmenu() string {
-	title := "MÓDULO SELECCIONADO"
+	title := "MODULO SELECCIONADO"
 	if m.state == stateSenaMenu {
-		title = "☕ SENA ZAJUNA · ADSO FICHA 3545922"
+		title = "SENA ZAJUNA · ADSO FICHA 3545922"
 	} else if m.state == stateSimaMenu {
-		title = "🏛️ SIMA UDC · INGENIERÍA DE SOFTWARE"
+		title = "SIMA UDC · INGENIERIA DE SOFTWARE"
 	} else if m.state == stateInglesMenu {
-		title = "🌐 SIMA INGLÉS · UDC BILINGÜISMO"
+		title = "SIMA INGLES · UDC BILINGUISMO"
 	}
 
 	header := AppTitleStyle.Render(title)
@@ -741,7 +868,7 @@ func (m Model) renderSubmenu() string {
 	}
 
 	menuBox := MenuBoxStyle.Render(strings.Join(lines, "\n"))
-	footer := FooterHelpStyle.Render("↑/k  ↓/j: navegar  •  enter: seleccionar  •  esc: volver")
+	footer := FooterHelpStyle.Render("↑/k  ↓/j: navegar  ·  enter: seleccionar  ·  esc: volver")
 
 	elements := []string{header, "", menuBox, "", footer}
 	return lipgloss.JoinVertical(lipgloss.Center, elements...)
@@ -755,15 +882,14 @@ func (m Model) renderLoading() string {
 }
 
 func (m Model) renderList() string {
-	header := AppTitleStyle.Render(fmt.Sprintf("📋 %s · %d REGISTROS", m.listTitle, len(m.listItems)))
+	header := AppTitleStyle.Render(fmt.Sprintf("%s · %d REGISTROS", m.listTitle, len(m.listItems)))
 
 	if len(m.listItems) == 0 {
-		empty := CardNormal.Render(SubtitleStyle.Render("No se encontraron elementos pendientes."))
+		empty := CardNormal.Render(SubtitleStyle.Render("No se encontraron registros."))
 		footer := FooterHelpStyle.Render("esc / q: volver")
 		return lipgloss.JoinVertical(lipgloss.Center, header, "", empty, "", footer)
 	}
 
-	// Paginación limpia: 6 tarjetas visibles
 	start := 0
 	if m.listCursor > 4 {
 		start = m.listCursor - 4
@@ -780,6 +906,8 @@ func (m Model) renderList() string {
 		statusTag := BadgeWarning.Render(fmt.Sprintf("[%s]", item.status))
 		if strings.Contains(item.status, "Aprobado") || strings.Contains(item.status, "ENVIADO") || strings.Contains(item.status, "REALIZADO") {
 			statusTag = BadgeSuccess.Render(fmt.Sprintf("[%s]", item.status))
+		} else if strings.Contains(item.status, "NO ENVIADO") || strings.Contains(item.status, "Deficiente") {
+			statusTag = BadgeError.Render(fmt.Sprintf("[%s]", item.status))
 		}
 
 		titleStr := item.title
@@ -787,7 +915,7 @@ func (m Model) renderList() string {
 			titleStr = titleStr[:49] + "..."
 		}
 
-		cardContent := fmt.Sprintf("%s  %s\n%s", statusTag, CardTitleStyle.Render(titleStr), CardSubtitleStyle.Render("  ↳ "+item.subtitle))
+		cardContent := fmt.Sprintf("%s  %s\n%s", statusTag, CardTitleStyle.Render(titleStr), CardSubtitleStyle.Render("  | "+item.subtitle))
 
 		if i == m.listCursor {
 			cardElements = append(cardElements, CardSelected.Render(" › "+cardContent))
@@ -797,7 +925,7 @@ func (m Model) renderList() string {
 	}
 
 	listColumn := lipgloss.JoinVertical(lipgloss.Left, cardElements...)
-	footer := FooterHelpStyle.Render("↑/k  ↓/j: navegar  •  enter: ver detalles  •  esc / q: volver")
+	footer := FooterHelpStyle.Render("↑/k  ↓/j: navegar  ·  enter: ver detalles  ·  esc / q: volver")
 
 	elements := []string{header, "", listColumn, "", footer}
 	return lipgloss.JoinVertical(lipgloss.Center, elements...)
@@ -808,7 +936,7 @@ func (m Model) renderDetail() string {
 		return ""
 	}
 
-	header := ModalTitleStyle.Render("🔍 DETALLE DEL REGISTRO")
+	header := ModalTitleStyle.Render("DETALLE DEL REGISTRO")
 	divider := ModalDivider.Render(strings.Repeat("─", 58))
 	body := CardSubtitleStyle.Render(m.detailItem.details)
 	footer := FooterHelpStyle.Render("enter / esc / q: volver a la lista")
@@ -823,11 +951,11 @@ func (m Model) renderAuth() string {
 	if m.authPlatform == model.PlatformSima {
 		platName = "SIMA UNIVERSIDAD DE CARTAGENA"
 	} else if m.authPlatform == model.PlatformIngles {
-		platName = "SIMA INGLÉS UDC"
+		platName = "SIMA INGLES UDC"
 	}
 
-	header := ModalTitleStyle.Render(fmt.Sprintf("🔐 CONFIGURACIÓN SEGURA · %s", platName))
-	subtitle := SubtitleStyle.Render("Cifrado AES-256-GCM nativo • Permisos restringidos 0600")
+	header := ModalTitleStyle.Render(fmt.Sprintf("CONFIGURACION SEGURA · %s", platName))
+	subtitle := SubtitleStyle.Render("Cifrado AES-256-GCM nativo · Permisos restringidos 0600")
 	divider := ModalDivider.Render(strings.Repeat("─", 58))
 
 	var fields []string
@@ -842,10 +970,10 @@ func (m Model) renderAuth() string {
 		fields = append(fields, "")
 	}
 
-	fields = append(fields, "Usuario / Número de Documento:")
+	fields = append(fields, "Usuario / Numero de Documento:")
 	fields = append(fields, m.authInputs[0].View(), "")
 
-	fields = append(fields, "Contraseña:")
+	fields = append(fields, "Contrasena:")
 	fields = append(fields, m.authInputs[1].View(), "")
 
 	saveBtnIdx := 2
@@ -867,12 +995,12 @@ func (m Model) renderAuth() string {
 
 	btnRow := fmt.Sprintf("%s   %s", saveBtn, cancelBtn)
 	if m.authLoading {
-		btnRow = fmt.Sprintf("%s  %s", m.spinner.View(), SubtitleStyle.Render("Validando sesión contra el servidor..."))
+		btnRow = fmt.Sprintf("%s  %s", m.spinner.View(), SubtitleStyle.Render("Validando sesion contra el servidor..."))
 	}
 
 	var alert string
 	if m.errorMessage != "" {
-		alert = StatusBarError.Render("❌ " + m.errorMessage)
+		alert = StatusBarError.Render("[ERROR] " + m.errorMessage)
 	}
 
 	elements := []string{header, subtitle, divider, ""}
