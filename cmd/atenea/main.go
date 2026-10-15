@@ -30,13 +30,19 @@ Uso CLI Directo:
 
   atenea udc upcoming        Entregas y examenes proximos en SIMA
   atenea udc grades          Calificaciones del semestre actual
+  atenea udc breakdown <id>  Notas por unidad y PCC de una asignatura
+  atenea udc anuncios        Anuncios y foros de asignaturas
 
   atenea ingles upcoming     Actividades proximas de ingles
+  atenea ingles grades       Calificacion consolidada de ingles
+  atenea ingles breakdown    Desglose por unidades (Unit 1-4 y Assessments)
+  atenea ingles anuncios     Anuncios del curso de bilinguismo
 
   atenea auth [modulo]       Configurar y cifrar credenciales
   atenea version             Version compilada
 `)
 }
+
 
 func main() {
 	v, err := vault.New()
@@ -223,7 +229,38 @@ func runSimaCLI(v *vault.Vault, args []string) {
 		fmt.Printf("\nCalificaciones Semestre Actual - SIMA UDC\n")
 		fmt.Println(strings.Repeat("-", 75))
 		for i, g := range grades {
-			fmt.Printf("[%02d] %-40s Nota: %s\n", i+1, g.Course, g.Grade)
+			fmt.Printf("[%02d] %-42s Nota: %-6s [ID: %s]\n", i+1, g.Course, g.Grade, g.ID)
+		}
+		fmt.Println(strings.Repeat("-", 75))
+
+
+	case "breakdown":
+		if len(args) < 2 {
+			fmt.Println("Uso: atenea udc breakdown <id_curso>")
+			return
+		}
+		items, err := client.GetCourseGradeBreakdown(args[1])
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+		fmt.Printf("\nDesglose de Calificaciones (Total: %d)\n", len(items))
+		fmt.Println(strings.Repeat("-", 75))
+		for i, item := range items {
+			fmt.Printf("[%02d] [%s] %-38s Nota: %-6s (Pond: %s, Rango: %s)\n", i+1, item.Category, item.Name, item.Grade, item.Weight, item.Range)
+		}
+		fmt.Println(strings.Repeat("-", 75))
+
+	case "anuncios":
+		ans, err := client.GetAnnouncements()
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+		fmt.Printf("\nAnuncios y Foros SIMA UDC (Total: %d)\n", len(ans))
+		fmt.Println(strings.Repeat("-", 75))
+		for i, a := range ans {
+			fmt.Printf("[%02d] %s\n     %s | %s\n", i+1, a.Title, a.Course, a.Author)
 		}
 		fmt.Println(strings.Repeat("-", 75))
 	}
@@ -247,15 +284,63 @@ func runInglesCLI(v *vault.Vault, args []string) {
 		return
 	}
 
-	evs, err := client.GetUpcomingEvents()
-	if err != nil {
-		fmt.Println("Error:", err)
-		return
+	action := "upcoming"
+	if len(args) > 0 {
+		action = strings.ToLower(args[0])
 	}
-	fmt.Printf("\nActividades Proximas - SIMA Ingles UDC (Total: %d)\n", len(evs))
-	fmt.Println(strings.Repeat("-", 75))
-	for i, e := range evs {
-		fmt.Printf("[%02d] %s\n     %s\n     Limite: %s | Estado: %s\n", i+1, e.Course, e.Title, e.DueDate, e.Status)
+
+	switch action {
+	case "upcoming":
+		evs, err := client.GetUpcomingEvents()
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+		fmt.Printf("\nActividades Proximas - SIMA Ingles UDC (Total: %d)\n", len(evs))
+		fmt.Println(strings.Repeat("-", 75))
+		for i, e := range evs {
+			fmt.Printf("[%02d] %s\n     %s\n     Limite: %s | Estado: %s\n", i+1, e.Course, e.Title, e.DueDate, e.Status)
+		}
+		fmt.Println(strings.Repeat("-", 75))
+
+	case "grades":
+		grades, err := client.GetGradesOverview()
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+		fmt.Printf("\nCalificacion Consolidada - SIMA Ingles UDC\n")
+		fmt.Println(strings.Repeat("-", 75))
+		for i, g := range grades {
+			fmt.Printf("[%02d] %-40s Nota: %s\n", i+1, g.Course, g.Grade)
+		}
+		fmt.Println(strings.Repeat("-", 75))
+
+	case "breakdown":
+		items, err := client.GetCourseGradeBreakdown("310")
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+		fmt.Printf("\nDesglose de Calificaciones por Unidad - SIMA Ingles UDC (Total: %d)\n", len(items))
+		fmt.Println(strings.Repeat("-", 75))
+		for i, item := range items {
+			fmt.Printf("[%02d] [%s] %-38s Nota: %-6s (Pond: %s, Rango: %s)\n", i+1, item.Category, item.Name, item.Grade, item.Weight, item.Range)
+		}
+		fmt.Println(strings.Repeat("-", 75))
+
+	case "anuncios":
+		ans, err := client.GetAnnouncements()
+		if err != nil {
+			fmt.Println("Error:", err)
+			return
+		}
+		fmt.Printf("\nAnuncios y Foros - SIMA Ingles UDC (Total: %d)\n", len(ans))
+		fmt.Println(strings.Repeat("-", 75))
+		for i, a := range ans {
+			fmt.Printf("[%02d] %s\n     %s | %s\n", i+1, a.Title, a.Course, a.Author)
+		}
+		fmt.Println(strings.Repeat("-", 75))
 	}
-	fmt.Println(strings.Repeat("-", 75))
 }
+

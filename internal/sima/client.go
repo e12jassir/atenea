@@ -258,7 +258,7 @@ func (c *Client) GetUpcomingEvents() ([]model.SimaEvent, error) {
 	return events, nil
 }
 
-// GetGradesOverview obtiene el reporte de notas por asignatura
+// GetGradesOverview obtiene el reporte de notas acumuladas por asignatura
 func (c *Client) GetGradesOverview() ([]model.CourseGrade, error) {
 	url := c.baseURL + "/grade/report/overview/index.php"
 	req, err := http.NewRequest("GET", url, nil)
@@ -290,6 +290,7 @@ func (c *Client) GetGradesOverview() ([]model.CourseGrade, error) {
 				val = "-"
 			}
 			grades = append(grades, model.CourseGrade{
+				ID:     m[1],
 				Course: cname,
 				Grade:  val,
 				Status: "Semestre Actual",
@@ -297,4 +298,179 @@ func (c *Client) GetGradesOverview() ([]model.CourseGrade, error) {
 		}
 	}
 	return grades, nil
+}
+
+// GetCourseGradeBreakdown obtiene el desglose de notas por unidad, PCC y exámenes de una materia
+func (c *Client) GetCourseGradeBreakdown(courseID string) ([]model.GradeItem, error) {
+	url := fmt.Sprintf("%s/grade/report/user/index.php?id=%s", c.baseURL, courseID)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setHeaders(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	html := string(bodyBytes)
+
+	trRegex := regexp.MustCompile(`(?s)<tr[^>]*>(.*?)</tr>`)
+	tdRegex := regexp.MustCompile(`(?s)<t[dh][^>]*>(.*?)</t[dh]>`)
+	tagRegex := regexp.MustCompile(`<[^>]+>`)
+	spaceRegex := regexp.MustCompile(`\s+`)
+	cleanPrefix := regexp.MustCompile(`^(Tarea|Cuestionario|Foro|Contenido interactivo|Cálculo total)`)
+
+	rows := trRegex.FindAllStringSubmatch(html, -1)
+	var items []model.GradeItem
+
+	for _, r := range rows {
+		if len(r) < 2 {
+			continue
+		}
+		cells := tdRegex.FindAllStringSubmatch(r[1], -1)
+		var cleaned []string
+		for _, cell := range cells {
+			if len(cell) > 1 {
+				t := tagRegex.ReplaceAllString(cell[1], "")
+				t = spaceRegex.ReplaceAllString(t, " ")
+				cleaned = append(cleaned, strings.TrimSpace(t))
+			}
+		}
+
+		if len(cleaned) >= 3 {
+			name := cleaned[0]
+			weight := cleaned[1]
+			grade := cleaned[2]
+			gradeRange := ""
+			if len(cleaned) > 3 {
+				gradeRange = strings.ReplaceAll(cleaned[3], "&ndash;", "-")
+			}
+
+			// Filtrar filas de encabezados o de calendario colateral
+			if name == "Ítem de calificación" || strings.Contains(name, "Sin eventos") || strings.Contains(name, "Lunes") ||
+				strings.Contains(name, "evento") || strings.Contains(name, "&nbsp;") || strings.Contains(weight, "evento") ||
+				strings.Contains(grade, "evento") || name == "&nbsp;" {
+				continue
+			}
+
+			cleanName := cleanPrefix.ReplaceAllString(name, "")
+			cleanName = strings.ReplaceAll(cleanName, "&amp;", "&")
+			cleanName = strings.ReplaceAll(cleanName, "&#039;", "'")
+			cleanName = strings.ReplaceAll(cleanName, "&quot;", "\"")
+			cleanName = strings.TrimSpace(cleanName)
+			if cleanName == "" || cleanName == "&nbsp;" {
+				continue
+			}
+
+			if idx := strings.Index(grade, " Acciones"); idx != -1 {
+				grade = strings.TrimSpace(grade[:idx])
+			}
+			if grade == "" {
+				grade = "-"
+			}
+
+
+			category := "Evidencia"
+			if strings.Contains(cleanName, "Total") {
+				category = "Acumulado"
+			} else if strings.Contains(cleanName, "Evaluación") || strings.Contains(cleanName, "Cuestionario") {
+				category = "Examen"
+			} else if strings.Contains(cleanName, "Trabajo colaborativo") || strings.Contains(cleanName, "Protocolo colaborativo") {
+				category = "PCC"
+			} else if strings.Contains(cleanName, "Protocolo individual") {
+				category = "Protocolo"
+			}
+
+			items = append(items, model.GradeItem{
+				Name:     cleanName,
+				Weight:   weight,
+				Grade:    grade,
+				Range:    gradeRange,
+				Category: category,
+			})
+		}
+	}
+
+	return items, nil
+}
+
+// GetAnnouncements consulta los anuncios y foros de las asignaturas
+func (c *Client) GetAnnouncements() ([]model.Announcement, error) {
+	courses, err := c.GetGradesOverview()
+	if err != nil {
+		return nil, err
+	}
+
+	var allAnnouncements []model.Announcement
+	discRegex := regexp.MustCompile(`(?s)href=['"](https://[^'"]*mod/forum/discuss\.php\?d=(\d+))['"][^>]*>(.*?)</a>`)
+	authorRegex := regexp.MustCompile(`(?s)class=['"]author[^'"]*['"][^>]*>(.*?)</td>`)
+	tagRegex := regexp.MustCompile(`<[^>]+>`)
+	spaceRegex := regexp.MustCompile(`\s+`)
+
+	for _, cr := range courses {
+		courseURL := fmt.Sprintf("%s/course/view.php?id=%s", c.baseURL, cr.ID)
+		req, err := http.NewRequest("GET", courseURL, nil)
+		if err != nil {
+			continue
+		}
+		c.setHeaders(req)
+		resp, err := c.http.Do(req)
+		if err != nil {
+			continue
+		}
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		reForum := regexp.MustCompile(`href=['"]([^'"]*mod/forum/view\.php\?id=\d+)['"]`)
+		forumMatches := reForum.FindAllStringSubmatch(string(bodyBytes), -1)
+
+		for _, fm := range forumMatches {
+			if len(fm) < 2 {
+				continue
+			}
+			fReq, err := http.NewRequest("GET", fm[1], nil)
+			if err != nil {
+				continue
+			}
+			c.setHeaders(fReq)
+			fResp, err := c.http.Do(fReq)
+			if err != nil {
+				continue
+			}
+			fBytes, _ := io.ReadAll(fResp.Body)
+			fResp.Body.Close()
+
+			fHTML := string(fBytes)
+			discMatches := discRegex.FindAllStringSubmatch(fHTML, -1)
+			authorMatches := authorRegex.FindAllStringSubmatch(fHTML, -1)
+
+			for i, dm := range discMatches {
+				if len(dm) >= 4 {
+					title := tagRegex.ReplaceAllString(dm[3], "")
+					title = strings.TrimSpace(spaceRegex.ReplaceAllString(title, " "))
+					link := dm[1]
+					discID := dm[2]
+
+					authorDate := "Docente"
+					if i < len(authorMatches) && len(authorMatches[i]) >= 2 {
+						authorDate = tagRegex.ReplaceAllString(authorMatches[i][1], "")
+						authorDate = strings.TrimSpace(spaceRegex.ReplaceAllString(authorDate, " "))
+					}
+
+					allAnnouncements = append(allAnnouncements, model.Announcement{
+						ID:     discID,
+						Course: cr.Course,
+						Title:  title,
+						Author: authorDate,
+						Link:   link,
+					})
+				}
+			}
+		}
+	}
+
+	return allAnnouncements, nil
 }

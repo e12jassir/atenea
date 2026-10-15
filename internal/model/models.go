@@ -36,6 +36,7 @@ type Evidence struct {
 // Announcement representa un comunicado oficial en el tablón
 type Announcement struct {
 	ID      string `json:"id"`
+	Course  string `json:"course,omitempty"`
 	Title   string `json:"title"`
 	Author  string `json:"author"`
 	Date    string `json:"date"`
@@ -56,7 +57,17 @@ type SimaEvent struct {
 
 // CourseGrade representa la calificación consolidada de una asignatura
 type CourseGrade struct {
+	ID     string `json:"id"`
 	Course string `json:"course"`
 	Grade  string `json:"grade"`
 	Status string `json:"status"`
+}
+
+// GradeItem representa el desglose de calificación por unidad o PCC
+type GradeItem struct {
+	Name     string `json:"name"`
+	Weight   string `json:"weight"`
+	Grade    string `json:"grade"`
+	Range    string `json:"range"`
+	Category string `json:"category,omitempty"` // "Unidad 1", "Unidad 2", "PCC", etc.
 }

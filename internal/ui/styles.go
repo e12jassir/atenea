@@ -44,7 +44,8 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(ColorBorder).
 			Padding(1, 2).
-			Width(64)
+			Width(70)
+
 
 	CategoryHeaderStyle = lipgloss.NewStyle().
 				Foreground(ColorCategory).
@@ -117,7 +118,8 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(ColorBorderSelected).
 			Padding(1, 2).
-			Width(64)
+			Width(70)
+
 
 	ModalTitleStyle = lipgloss.NewStyle().
 			Bold(true).
