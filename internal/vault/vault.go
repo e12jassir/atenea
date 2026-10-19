@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -36,6 +37,10 @@ func New() (*Vault, error) {
 	}
 
 	baseDir := filepath.Join(home, ".config", "atenea")
+	return NewWithDir(baseDir)
+}
+
+func NewWithDir(baseDir string) (*Vault, error) {
 	if err := os.MkdirAll(baseDir, 0700); err != nil {
 		return nil, err
 	}
@@ -53,17 +58,52 @@ func New() (*Vault, error) {
 func (v *Vault) getOrCreateKey() ([]byte, error) {
 	if _, err := os.Stat(v.keyPath); err == nil {
 		key, err := os.ReadFile(v.keyPath)
-		if err == nil && len(key) == 32 {
-			return key, nil
+		if err != nil {
+			return nil, fmt.Errorf("failed to read key file %s: %w", v.keyPath, err)
 		}
+		if len(key) != 32 {
+			return nil, fmt.Errorf("invalid key length in %s: expected 32 bytes, got %d", v.keyPath, len(key))
+		}
+		return key, nil
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to check key file %s: %w", v.keyPath, err)
 	}
 
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		return nil, fmt.Errorf("failed to generate random key: %w", err)
+	}
+
+	tmpKeyPath := v.keyPath + ".tmp"
+	f, err := os.OpenFile(tmpKeyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
 		return nil, err
 	}
 
-	if err := os.WriteFile(v.keyPath, key, 0600); err != nil {
+	if _, err := f.Write(key); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpKeyPath)
+		return nil, err
+	}
+
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpKeyPath)
+		return nil, err
+	}
+
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpKeyPath)
+		return nil, err
+	}
+
+	if err := os.Chmod(tmpKeyPath, 0600); err != nil {
+		_ = os.Remove(tmpKeyPath)
+		return nil, err
+	}
+
+	if err := os.Rename(tmpKeyPath, v.keyPath); err != nil {
+		_ = os.Remove(tmpKeyPath)
 		return nil, err
 	}
 	_ = os.Chmod(v.keyPath, 0600)
@@ -75,8 +115,15 @@ func (v *Vault) loadData() (*vaultData, error) {
 	if _, err := os.Stat(v.dataHost); os.IsNotExist(err) {
 		// Intentar migrar desde archivos existentes
 		data := v.migrateExisting()
-		_ = v.saveData(data)
-		return data, nil
+		if len(data.Platforms) > 0 {
+			if err := v.saveData(data); err != nil {
+				return nil, err
+			}
+			return data, nil
+		}
+		return nil, err
+	} else if err != nil {
+		return nil, err
 	}
 
 	key, err := v.getOrCreateKey()
@@ -150,7 +197,36 @@ func (v *Vault) saveData(data *vaultData) error {
 
 	ciphertext := gcm.Seal(nonce, nonce, plaintext, nil)
 
-	if err := os.WriteFile(v.dataHost, ciphertext, 0600); err != nil {
+	tmpPath := filepath.Join(filepath.Dir(v.dataHost), filepath.Base(v.dataHost)+".tmp")
+	f, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+
+	if _, err := f.Write(ciphertext); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	if err := os.Chmod(tmpPath, 0600); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+
+	if err := os.Rename(tmpPath, v.dataHost); err != nil {
+		_ = os.Remove(tmpPath)
 		return err
 	}
 	_ = os.Chmod(v.dataHost, 0600)
@@ -162,6 +238,9 @@ func (v *Vault) saveData(data *vaultData) error {
 func (v *Vault) GetCredentials(platform model.Platform) (model.Credentials, error) {
 	data, err := v.loadData()
 	if err != nil {
+		if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+			return model.Credentials{}, ErrNotFound
+		}
 		return model.Credentials{}, err
 	}
 
@@ -177,7 +256,11 @@ func (v *Vault) GetCredentials(platform model.Platform) (model.Credentials, erro
 func (v *Vault) SaveCredentials(creds model.Credentials) error {
 	data, err := v.loadData()
 	if err != nil {
-		data = &vaultData{Platforms: make(map[string]model.Credentials)}
+		if os.IsNotExist(err) || errors.Is(err, os.ErrNotExist) {
+			data = &vaultData{Platforms: make(map[string]model.Credentials)}
+		} else {
+			return fmt.Errorf("cannot load existing vault data: %w", err)
+		}
 	}
 
 	data.Platforms[string(creds.Platform)] = creds

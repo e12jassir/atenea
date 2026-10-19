@@ -117,6 +117,13 @@ func NewModel(v *vault.Vault) Model {
 	return m
 }
 
+// NewModelWithAuth crea el modelo de la TUI iniciando directamente en la pantalla de autenticación del módulo especificado
+func NewModelWithAuth(v *vault.Vault, p model.Platform) Model {
+	m := NewModel(v)
+	m.startAuth(p)
+	return m
+}
+
 func (m *Model) initAuthInputs() {
 	m.authInputs = make([]textinput.Model, 2)
 
@@ -487,12 +494,7 @@ func (m Model) updateInglesMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.prevState = stateInglesMenu
 			m.loadingText = "Sincronizando cronograma de Ingles UDC..."
 			return m, m.fetchSimaUpcoming(model.PlatformIngles)
-		case 1: // Anuncios
-			m.state = stateLoading
-			m.prevState = stateInglesMenu
-			m.loadingText = "Consultando comunicados de Ingles..."
-			return m, m.fetchInglesAnnouncements()
-		case 2: // Notas
+		case 1: // Notas por unidad
 			m.state = stateInglesGradesMenu
 			m.subCursor = 0
 			m.subItems = []string{
@@ -500,6 +502,11 @@ func (m Model) updateInglesMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				"2. Nota acumulada del curso (Reporte consolidado)",
 				"3. Volver al menu de Ingles",
 			}
+		case 2: // Anuncios del curso
+			m.state = stateLoading
+			m.prevState = stateInglesMenu
+			m.loadingText = "Consultando comunicados de Ingles..."
+			return m, m.fetchInglesAnnouncements()
 		case 3:
 			m.state = stateMenu
 		}
@@ -1347,14 +1354,16 @@ func (m Model) renderList() string {
 			statusTag = BadgeError.Render(fmt.Sprintf("[%s]", item.status))
 		}
 
+		titleRunes := []rune(item.title)
 		titleStr := item.title
-		if len(titleStr) > 58 {
-			titleStr = titleStr[:55] + "..."
+		if len(titleRunes) > 58 {
+			titleStr = string(titleRunes[:55]) + "..."
 		}
 
+		subtitleRunes := []rune(item.subtitle)
 		subtitleStr := item.subtitle
-		if len(subtitleStr) > 42 {
-			subtitleStr = subtitleStr[:39] + "..."
+		if len(subtitleRunes) > 42 {
+			subtitleStr = string(subtitleRunes[:39]) + "..."
 		}
 
 		line1 := CardTitleStyle.Render(titleStr)

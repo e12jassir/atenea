@@ -1,20 +1,23 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/e12jassir/atenea/internal/doctor"
 	"github.com/e12jassir/atenea/internal/model"
 	"github.com/e12jassir/atenea/internal/sena"
+	"github.com/e12jassir/atenea/internal/session"
 	"github.com/e12jassir/atenea/internal/sima"
 	"github.com/e12jassir/atenea/internal/ui"
 	"github.com/e12jassir/atenea/internal/vault"
 )
 
 func printHelp() {
-	fmt.Println(`ATENEA - Suite de Inteligencia Academica (Edicion Go)
+	fmt.Print(`ATENEA - Suite de Inteligencia Academica (Edicion Go)
 SENA Zajuna ADSO + Universidad de Cartagena (SIMA e Ingles)
 
 Uso Interactivo:
@@ -38,6 +41,7 @@ Uso CLI Directo:
   atenea ingles breakdown    Desglose por unidades (Unit 1-4 y Assessments)
   atenea ingles anuncios     Anuncios del curso de bilinguismo
 
+  atenea doctor              Diagnostico de conectividad, boveda y sesiones
   atenea auth [modulo]       Configurar y cifrar credenciales
   atenea version             Version compilada
 `)
@@ -61,6 +65,12 @@ func main() {
 			return
 		case "version", "-v", "--version":
 			fmt.Println("Atenea v2.0.0 (Go Native • Charm Bubble Tea)")
+			return
+		case "doctor":
+			runDoctorCLI(subArgs)
+			return
+		case "auth":
+			runAuthCLI(v, subArgs)
 			return
 		case "sena":
 			runSenaCLI(v, subArgs)
@@ -95,7 +105,13 @@ func runSenaCLI(v *vault.Vault, args []string) {
 		return
 	}
 
-	if err := client.Login(creds.DocType, creds.User, creds.Password); err != nil {
+	store, err := session.New()
+	if err == nil {
+		err = client.EnsureAuthenticated(store, creds.DocType, creds.User, creds.Password)
+	} else {
+		err = client.Login(creds.DocType, creds.User, creds.Password)
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "[ERROR] Autenticacion fallida en Zajuna: %v\n", err)
 		return
 	}
@@ -342,5 +358,172 @@ func runInglesCLI(v *vault.Vault, args []string) {
 		}
 		fmt.Println(strings.Repeat("-", 75))
 	}
+}
+
+func runDoctorCLI(args []string) {
+	fmt.Println("Ejecutando diagnóstico integral de Atenea...")
+	fmt.Println()
+	report, err := doctor.RunDiagnostics("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error ejecutando diagnóstico: %v\n", err)
+		os.Exit(1)
+	}
+
+	report.PrintSummary(os.Stdout)
+	if report.OverallStatus == doctor.StatusFail {
+		os.Exit(1)
+	}
+}
+
+func runAuthCLI(v *vault.Vault, args []string) {
+	if len(args) == 0 || strings.ToLower(args[0]) == "status" {
+		printAuthStatus(v)
+		return
+	}
+
+	platformName := strings.ToLower(args[0])
+	var targetPlatform model.Platform
+	switch platformName {
+	case "sena":
+		targetPlatform = model.PlatformSena
+	case "sima", "udc":
+		targetPlatform = model.PlatformSima
+	case "ingles":
+		targetPlatform = model.PlatformIngles
+	default:
+		fmt.Printf("[ERROR] Módulo '%s' desconocido.\n", platformName)
+		fmt.Println("Módulos disponibles: sena, sima (o udc), ingles, status")
+		return
+	}
+
+	// Check if --cli flag was provided
+	useCLI := false
+	for _, arg := range args[1:] {
+		if arg == "--cli" {
+			useCLI = true
+			break
+		}
+	}
+
+	if useCLI {
+		runAuthPromptCLI(v, targetPlatform)
+		return
+	}
+
+	// Launch Bubble Tea TUI directly in authentication view for this platform
+	p := tea.NewProgram(ui.NewModelWithAuth(v, targetPlatform), tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error al iniciar interfaz interactiva: %v\n", err)
+		fmt.Println("Cambiando a modo terminal directo...")
+		runAuthPromptCLI(v, targetPlatform)
+	}
+}
+
+func printAuthStatus(v *vault.Vault) {
+	fmt.Println("\nEstado de Credenciales en Bóveda Cifrada (AES-256-GCM)")
+	fmt.Println(strings.Repeat("-", 75))
+
+	platforms := []struct {
+		platform model.Platform
+		name     string
+	}{
+		{model.PlatformSena, "SENA Zajuna ADSO"},
+		{model.PlatformSima, "UDC SIMA"},
+		{model.PlatformIngles, "UDC Inglés Institucional"},
+	}
+
+	for _, p := range platforms {
+		creds, err := v.GetCredentials(p.platform)
+		if err == nil && creds.User != "" && creds.Password != "" {
+			docInfo := ""
+			if creds.DocType != "" {
+				docInfo = fmt.Sprintf("[%s] ", creds.DocType)
+			}
+			maskedUser := creds.User
+			if len(maskedUser) > 4 {
+				maskedUser = maskedUser[:4] + strings.Repeat("*", len(maskedUser)-4)
+			}
+			fmt.Printf("[OK]   %-26s Configurado (%s%s)\n", p.name+":", docInfo, maskedUser)
+		} else {
+			fmt.Printf("[WARN] %-26s No configurado\n", p.name+":")
+		}
+	}
+
+	fmt.Println(strings.Repeat("-", 75))
+	fmt.Println("Para configurar o actualizar credenciales:")
+	fmt.Println("  atenea auth <sena|sima|ingles>")
+	fmt.Println("Para verificar conectividad y diagnósticos completos:")
+	fmt.Println("  atenea doctor")
+	fmt.Println()
+}
+
+func runAuthPromptCLI(v *vault.Vault, p model.Platform) {
+	reader := bufio.NewReader(os.Stdin)
+	var docType, user, pass string
+
+	fmt.Printf("\n--- Configuración de Credenciales: %s ---\n", p)
+	if p == model.PlatformSena {
+		fmt.Print("Tipo de Documento (TI, CC, CE, PAS) [CC]: ")
+		dt, _ := reader.ReadString('\n')
+		dt = strings.TrimSpace(dt)
+		if dt == "" {
+			dt = "CC"
+		}
+		docType = strings.ToUpper(dt)
+	}
+
+	fmt.Print("Número de Documento / Usuario: ")
+	u, _ := reader.ReadString('\n')
+	user = strings.TrimSpace(u)
+
+	fmt.Print("Contraseña: ")
+	pwd, _ := reader.ReadString('\n')
+	pass = strings.TrimSpace(pwd)
+
+	if user == "" || pass == "" {
+		fmt.Println("[ERROR] El usuario y contraseña son requeridos.")
+		return
+	}
+
+	fmt.Println("\nVerificando credenciales en vivo...")
+	if p == model.PlatformSena {
+		client, err := sena.NewClient()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creando cliente SENA: %v\n", err)
+			return
+		}
+		if err := client.Login(docType, user, pass); err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] Autenticación fallida en SENA Zajuna: %v\n", err)
+			return
+		}
+	} else {
+		baseURL := "https://sima.unicartagena.edu.co"
+		if p == model.PlatformIngles {
+			baseURL = "https://ingles.unicartagena.edu.co"
+		}
+		client, err := sima.NewClient(baseURL)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error creando cliente SIMA: %v\n", err)
+			return
+		}
+		if err := client.Login(user, pass); err != nil {
+			fmt.Fprintf(os.Stderr, "[ERROR] Autenticación fallida en %s: %v\n", baseURL, err)
+			return
+		}
+	}
+
+	creds := model.Credentials{
+		Platform: p,
+		DocType:  docType,
+		User:     user,
+		Password: pass,
+	}
+
+	if err := v.SaveCredentials(creds); err != nil {
+		fmt.Fprintf(os.Stderr, "[ERROR] Error al guardar en la bóveda: %v\n", err)
+		return
+	}
+
+	fmt.Println("[OK] Credenciales verificadas exitosamente y cifradas en la bóveda segura.")
 }
 

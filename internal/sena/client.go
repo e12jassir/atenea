@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/e12jassir/atenea/internal/model"
+	"github.com/e12jassir/atenea/internal/session"
 )
 
 const (
@@ -27,6 +28,7 @@ type Client struct {
 	http   *http.Client
 	jar    *cookiejar.Jar
 	course string
+	store  session.SessionStore
 }
 
 func NewClient() (*Client, error) {
@@ -47,6 +49,14 @@ func NewClient() (*Client, error) {
 	}, nil
 }
 
+func (c *Client) SetSessionStore(store session.SessionStore) {
+	c.store = store
+}
+
+func (c *Client) SessionStore() session.SessionStore {
+	return c.store
+}
+
 func (c *Client) Login(docType, username, password string) error {
 	// Paso 1: GET base para iniciar cookies
 	req, err := http.NewRequest("GET", BaseURL, nil)
@@ -58,7 +68,10 @@ func (c *Client) Login(docType, username, password string) error {
 	if err != nil {
 		return fmt.Errorf("error al conectar con Zajuna: %w", err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("error al conectar con Zajuna: HTTP %d", resp.StatusCode)
+	}
 
 	// Paso 2: Autenticación en SSO Gateway (lg.php)
 	data := url.Values{}
@@ -80,7 +93,14 @@ func (c *Client) Login(docType, username, password string) error {
 	}
 	defer postResp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(postResp.Body)
+	if postResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("error enviando credenciales a Zajuna: HTTP %d", postResp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(postResp.Body)
+	if err != nil {
+		return fmt.Errorf("error leyendo respuesta de Zajuna: %w", err)
+	}
 	body := string(bodyBytes)
 
 	if strings.Contains(postResp.Request.URL.RawQuery, "error=") {
@@ -124,13 +144,200 @@ func (c *Client) Login(docType, username, password string) error {
 	if err != nil {
 		return fmt.Errorf("error completando sesión en Moodle: %w", err)
 	}
-	moodleResp.Body.Close()
+	defer moodleResp.Body.Close()
+
+	if moodleResp.StatusCode != http.StatusOK {
+		return fmt.Errorf("error completando sesión en Moodle: HTTP %d", moodleResp.StatusCode)
+	}
 
 	if !c.hasMoodleCookie() {
 		return errors.New("la sesión Moodle no fue establecida")
 	}
 
+	if c.store != nil {
+		cookies := c.getCookiesForSession()
+		if err := c.store.Save(&session.SessionEntry{
+			Platform:  "sena",
+			Cookies:   cookies,
+			ExpiresAt: time.Now().Add(2 * time.Hour),
+		}); err != nil {
+			return fmt.Errorf("error guardando sesión en store: %w", err)
+		}
+	}
+
 	return nil
+}
+
+// RestoreSession loads a cached session for the "sena" platform from store.
+// If valid and not expired, it injects the cookies into c.jar for
+// https://zajuna.sena.edu.co and https://zajuna.sena.edu.co/zajuna/.
+// Returns true, nil if the session was restored.
+func (c *Client) RestoreSession(store session.SessionStore) (bool, error) {
+	if store == nil {
+		return false, nil
+	}
+
+	c.store = store
+
+	entry, err := store.Load("sena")
+	if err != nil {
+		if errors.Is(err, session.ErrNotFound) || errors.Is(err, session.ErrExpired) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	if entry == nil || !entry.IsValid() || len(entry.Cookies) == 0 {
+		return false, nil
+	}
+
+	var validCookies []*http.Cookie
+	for _, ck := range entry.Cookies {
+		if ck != nil {
+			validCookies = append(validCookies, ck)
+		}
+	}
+	if len(validCookies) == 0 {
+		return false, nil
+	}
+
+	if c.jar == nil {
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			return false, fmt.Errorf("error al inicializar cookiejar: %w", err)
+		}
+		c.jar = jar
+		if c.http != nil {
+			c.http.Jar = jar
+		}
+	}
+
+	uRoot, err := url.Parse(BaseURL)
+	if err != nil {
+		return false, fmt.Errorf("URL base inválida: %w", err)
+	}
+	uZajuna, err := url.Parse(MoodleBase + "/")
+	if err != nil {
+		return false, fmt.Errorf("URL de Zajuna inválida: %w", err)
+	}
+
+	c.jar.SetCookies(uRoot, validCookies)
+	c.jar.SetCookies(uZajuna, validCookies)
+
+	return true, nil
+}
+
+// EnsureAuthenticated ensures the client has an active authenticated session.
+// It first attempts to restore a cached session from store.
+// If restored, it validates the session by performing a quick check to https://zajuna.sena.edu.co/zajuna/my/
+// verifying it does not redirect to /login/.
+// If not restored or session check fails, it calls Login and saves the new session to store.
+func (c *Client) EnsureAuthenticated(store session.SessionStore, docType, user, pass string) error {
+	c.store = store
+
+	restored, err := c.RestoreSession(store)
+	if err == nil && restored {
+		if c.ValidateSession() {
+			return nil
+		}
+	}
+
+	if err := c.Login(docType, user, pass); err != nil {
+		return err
+	}
+
+	if store != nil {
+		cookies := c.getCookiesForSession()
+		if err := store.Save(&session.SessionEntry{
+			Platform:  "sena",
+			Cookies:   cookies,
+			ExpiresAt: time.Now().Add(2 * time.Hour),
+		}); err != nil {
+			return fmt.Errorf("error guardando sesión en store: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// ValidateSession performs a quick check to https://zajuna.sena.edu.co/zajuna/my/
+// checking that it does NOT redirect to /login/.
+// Returns true if the session is active and valid.
+func (c *Client) ValidateSession() bool {
+	if c.http == nil {
+		return false
+	}
+
+	checkURL := MoodleBase + "/my/"
+	req, err := http.NewRequest("GET", checkURL, nil)
+	if err != nil {
+		return false
+	}
+	c.setHeaders(req, BaseURL+"/")
+
+	// Copy client to intercept redirects to /login/ without modifying global client
+	checkClient := *c.http
+	checkClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if strings.Contains(req.URL.Path, "/login/") || strings.Contains(req.URL.String(), "/login/") {
+			return http.ErrUseLastResponse
+		}
+		if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		return nil
+	}
+
+	resp, err := checkClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	// If redirect response with Location pointing to login
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		loc := resp.Header.Get("Location")
+		if strings.Contains(loc, "/login/") {
+			return false
+		}
+	}
+
+	// If final URL points to login
+	if resp.Request != nil && resp.Request.URL != nil {
+		if strings.Contains(resp.Request.URL.Path, "/login/") || strings.Contains(resp.Request.URL.String(), "/login/") {
+			return false
+		}
+	}
+
+	return resp.StatusCode == http.StatusOK
+}
+
+func (c *Client) getCookiesForSession() []*http.Cookie {
+	if c.jar == nil {
+		return nil
+	}
+	uRoot, _ := url.Parse(BaseURL)
+	uZajuna, _ := url.Parse(MoodleBase + "/")
+	uLogin, _ := url.Parse(LoginPostURL)
+
+	var cookies []*http.Cookie
+	seen := make(map[string]bool)
+
+	for _, u := range []*url.URL{uZajuna, uRoot, uLogin} {
+		if u == nil {
+			continue
+		}
+		for _, ck := range c.jar.Cookies(u) {
+			if ck == nil {
+				continue
+			}
+			if !seen[ck.Name] {
+				seen[ck.Name] = true
+				ckCopy := *ck
+				cookies = append(cookies, &ckCopy)
+			}
+		}
+	}
+	return cookies
 }
 
 func (c *Client) hasMoodleCookie() bool {
@@ -152,8 +359,10 @@ func (c *Client) setHeaders(req *http.Request, referer string) {
 }
 
 type GradeReportResult struct {
-	Graded  []model.Evidence
-	Pending []model.Evidence
+	Approved  []model.Evidence
+	Deficient []model.Evidence
+	Graded    []model.Evidence
+	Pending   []model.Evidence
 }
 
 // GetGradeReport consulta el libro de calificaciones y extrae aprobadas, no aprobadas y pendientes
@@ -171,7 +380,14 @@ func (c *Client) GetGradeReport() (*GradeReportResult, error) {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("error consultando libro de calificaciones: HTTP %d", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error leyendo libro de calificaciones: %w", err)
+	}
 	html := string(bodyBytes)
 
 	trRegex := regexp.MustCompile(`(?s)<tr[^>]*>(.*?)</tr>`)
@@ -214,18 +430,26 @@ func (c *Client) GetGradeReport() (*GradeReportResult, error) {
 					cleanName = "Taller: " + strings.TrimSpace(strings.TrimPrefix(name, "Taller"))
 				}
 
-				if grade == "A" || grade == "D" {
-					status := "Aprobado (A)"
-					if grade == "D" {
-						status = "Deficiente (D)"
-					}
-					res.Graded = append(res.Graded, model.Evidence{
+				if grade == "A" {
+					ev := model.Evidence{
 						Title:    cleanName,
 						Course:   "ADSO Ficha 3545922",
-						Status:   status,
-						Grade:    grade,
+						Status:   "Aprobado (A)",
+						Grade:    "A",
 						Feedback: feedback,
-					})
+					}
+					res.Approved = append(res.Approved, ev)
+					res.Graded = append(res.Graded, ev)
+				} else if grade == "D" {
+					ev := model.Evidence{
+						Title:    cleanName,
+						Course:   "ADSO Ficha 3545922",
+						Status:   "Deficiente (D)",
+						Grade:    "D",
+						Feedback: feedback,
+					}
+					res.Deficient = append(res.Deficient, ev)
+					res.Graded = append(res.Graded, ev)
 				} else {
 					res.Pending = append(res.Pending, model.Evidence{
 						Title:    cleanName,
@@ -242,22 +466,35 @@ func (c *Client) GetGradeReport() (*GradeReportResult, error) {
 	return res, nil
 }
 
-// GetPendingEvidences consulta únicamente las pendientes
+// GetPendingEvidences consulta las evidencias que requieren atención:
+// primero las deficientes (D) que requieren reentrega urgente, seguidas de las pendientes por calificar.
 func (c *Client) GetPendingEvidences() ([]model.Evidence, error) {
 	rep, err := c.GetGradeReport()
 	if err != nil {
 		return nil, err
 	}
-	return rep.Pending, nil
+	var allPending []model.Evidence
+	allPending = append(allPending, rep.Deficient...)
+	allPending = append(allPending, rep.Pending...)
+	return allPending, nil
 }
 
-// GetApprovedGrades consulta las calificaciones aprobadas
+// GetApprovedGrades consulta únicamente las calificaciones aprobadas con juicio A
 func (c *Client) GetApprovedGrades() ([]model.Evidence, error) {
 	rep, err := c.GetGradeReport()
 	if err != nil {
 		return nil, err
 	}
-	return rep.Graded, nil
+	return rep.Approved, nil
+}
+
+// GetDeficientGrades consulta las calificaciones con juicio Deficiente (D) que requieren reentrega urgente
+func (c *Client) GetDeficientGrades() ([]model.Evidence, error) {
+	rep, err := c.GetGradeReport()
+	if err != nil {
+		return nil, err
+	}
+	return rep.Deficient, nil
 }
 
 // GetFeedback consulta las evidencias que tienen retroalimentación del instructor
@@ -290,7 +527,14 @@ func (c *Client) CheckAssignSubmission(assignID string) string {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "DESCONOCIDO"
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "DESCONOCIDO"
+	}
 	html := string(bodyBytes)
 
 	if strings.Contains(html, "Enviado para calificar") {
@@ -301,6 +545,82 @@ func (c *Client) CheckAssignSubmission(assignID string) string {
 		return "BORRADOR"
 	}
 	return "PENDIENTE"
+}
+
+var evidenceCodeRegex = regexp.MustCompile(`(?i)\b(GA\d+-[A-Za-z0-9-]+-EV\d+)\b`)
+
+type linkInfo struct {
+	id   string
+	name string
+}
+
+func extractEvidenceCode(s string) string {
+	m := evidenceCodeRegex.FindStringSubmatch(s)
+	if len(m) > 1 {
+		return strings.ToUpper(m[1])
+	}
+	return ""
+}
+
+func normalizeForMatching(s string) string {
+	s = strings.ToLower(s)
+	genericWords := []string{
+		"evidencia:", "evidencia",
+		"informe:", "informe",
+		"taller:", "taller",
+		"proyecto:", "proyecto",
+		"foro:", "foro",
+		"cuestionario:", "cuestionario",
+		"actividad:", "actividad",
+	}
+	for _, w := range genericWords {
+		s = strings.ReplaceAll(s, w, " ")
+	}
+
+	var runes []rune
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			runes = append(runes, r)
+		} else if len(runes) > 0 && runes[len(runes)-1] != ' ' {
+			runes = append(runes, ' ')
+		}
+	}
+	return strings.TrimSpace(string(runes))
+}
+
+func matchEvidenceLink(title string, links []linkInfo) string {
+	evCode := extractEvidenceCode(title)
+	if evCode != "" {
+		for _, l := range links {
+			linkCode := extractEvidenceCode(l.name)
+			if linkCode != "" && linkCode == evCode {
+				return l.id
+			}
+			if strings.Contains(strings.ToUpper(l.name), evCode) {
+				return l.id
+			}
+		}
+	}
+
+	normEv := normalizeForMatching(title)
+	if len(normEv) >= 6 {
+		for _, l := range links {
+			normLink := normalizeForMatching(l.name)
+			if len(normLink) >= 6 {
+				if normEv == normLink {
+					return l.id
+				}
+				if len(normEv) >= 12 && strings.Contains(normLink, normEv) {
+					return l.id
+				}
+				if len(normLink) >= 12 && strings.Contains(normEv, normLink) {
+					return l.id
+				}
+			}
+		}
+	}
+
+	return ""
 }
 
 // AuditPendingEvidences audita concurrentemente con goroutines el estado de entrega en vivo
@@ -314,26 +634,29 @@ func (c *Client) AuditPendingEvidences() ([]model.Evidence, error) {
 	reportURL := fmt.Sprintf("%s/grade/report/user/index.php?id=%s", MoodleBase, c.course)
 	req, err := http.NewRequest("GET", reportURL, nil)
 	if err != nil {
-		return rep.Pending, nil
+		return nil, err
 	}
 	c.setHeaders(req, BaseURL+"/")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return rep.Pending, nil
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("error obteniendo libro de calificaciones para auditoria: HTTP %d", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error leyendo libro de calificaciones para auditoria: %w", err)
+	}
 	html := string(bodyBytes)
 
 	reLink := regexp.MustCompile(`href="([^"]*assign/view\.php\?id=(\d+))"[^>]*>(.*?)</a>`)
 	tagRegex := regexp.MustCompile(`<[^>]+>`)
 	matches := reLink.FindAllStringSubmatch(html, -1)
 
-	type linkInfo struct {
-		id   string
-		name string
-	}
 	var links []linkInfo
 	for _, m := range matches {
 		if len(m) >= 4 {
@@ -343,27 +666,19 @@ func (c *Client) AuditPendingEvidences() ([]model.Evidence, error) {
 	}
 
 	// Consultar con worker pool concurrente en Go
+	var pendingList []model.Evidence
+	pendingList = append(pendingList, rep.Deficient...)
+	pendingList = append(pendingList, rep.Pending...)
+
 	var wg sync.WaitGroup
-	results := make([]model.Evidence, len(rep.Pending))
-	copy(results, rep.Pending)
+	results := make([]model.Evidence, len(pendingList))
+	copy(results, pendingList)
 
 	sem := make(chan struct{}, 6) // máx 6 goroutines concurrentes
 
 	for i := range results {
 		ev := &results[i]
-		var foundID string
-		for _, l := range links {
-			parts := strings.Split(ev.Title, " ")
-			for _, p := range parts {
-				if len(p) > 6 && strings.Contains(l.name, p) {
-					foundID = l.id
-					break
-				}
-			}
-			if foundID != "" {
-				break
-			}
-		}
+		foundID := matchEvidenceLink(ev.Title, links)
 
 		if foundID != "" {
 			wg.Add(1)
@@ -395,7 +710,14 @@ func (c *Client) GetAnnouncements() ([]model.Announcement, error) {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("error consultando anuncios de Zajuna: HTTP %d", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error leyendo anuncios de Zajuna: %w", err)
+	}
 	html := string(bodyBytes)
 
 	trRegex := regexp.MustCompile(`(?s)<tr[^>]*class=['"]discussion[^'"]*['"][^>]*>(.*?)</tr>`)
@@ -453,7 +775,14 @@ func (c *Client) GetAnnouncementDetail(discussID string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("error consultando detalle de anuncio: HTTP %d", resp.StatusCode)
+	}
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("error leyendo detalle de anuncio: %w", err)
+	}
 	html := string(bodyBytes)
 
 	rePost := regexp.MustCompile(`(?s)class=['"]post-content-container[^'"]*['"][^>]*>(.*?)</div>\s*</div>\s*</div>`)
