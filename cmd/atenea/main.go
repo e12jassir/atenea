@@ -24,6 +24,11 @@ Uso Interactivo:
   atenea                     Inicia la TUI interactiva (Bubble Tea)
 
 Uso CLI Directo:
+  atenea scan [--live]       Instantanea local SQLite (0ms) o sync en vivo
+  atenea watch [--interval]  Daemon en background con alertas notify-send
+  atenea submit <plat> <id> <file> [comentario] Entrega con recibo criptografico SHA-256
+  atenea forum <plat> <list|read|reply> ...     Interaccion completa con foros Moodle
+
   atenea sena check          Auditoria en vivo de estado de evidencias
   atenea sena pending        Lista de evidencias pendientes
   atenea sena notas          Juicios evaluativos aprobados [A]
@@ -71,6 +76,18 @@ func main() {
 			return
 		case "auth":
 			runAuthCLI(v, subArgs)
+			return
+		case "submit":
+			runSubmitCLI(v, subArgs)
+			return
+		case "forum":
+			runForumCLI(v, subArgs)
+			return
+		case "watch":
+			runWatchCLI(v, subArgs)
+			return
+		case "scan":
+			runScanCLI(v, subArgs)
 			return
 		case "sena":
 			runSenaCLI(v, subArgs)

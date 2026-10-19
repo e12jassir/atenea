@@ -57,6 +57,11 @@ func (c *Client) SessionStore() session.SessionStore {
 	return c.store
 }
 
+// HTTPClient expone el cliente HTTP interno configurado con el cookiejar de la sesión.
+func (c *Client) HTTPClient() *http.Client {
+	return c.http
+}
+
 func (c *Client) Login(docType, username, password string) error {
 	// Paso 1: GET base para iniciar cookies
 	req, err := http.NewRequest("GET", BaseURL, nil)
